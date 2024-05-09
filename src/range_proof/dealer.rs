@@ -10,7 +10,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use curve25519_dalek::ristretto::RistrettoPoint;
+//use curve25519_dalek::ristretto::RistrettoPoint;
+use ark_bn254::{Fq, G1Affine, G1Projective, G2Affine};
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 
@@ -109,10 +110,10 @@ impl<'a, 'b> DealerAwaitingBitCommitments<'a, 'b> {
         }
 
         // Commit aggregated A_j, S_j
-        let A: RistrettoPoint = bit_commitments.iter().map(|vc| vc.A_j).sum();
+        let A: G1Projective = bit_commitments.iter().map(|vc| vc.A_j).sum();
         self.transcript.append_point(b"A", &A.compress());
 
-        let S: RistrettoPoint = bit_commitments.iter().map(|vc| vc.S_j).sum();
+        let S: G1Projective = bit_commitments.iter().map(|vc| vc.S_j).sum();
         self.transcript.append_point(b"S", &S.compress());
 
         let y = self.transcript.challenge_scalar(b"y");
@@ -149,9 +150,9 @@ pub struct DealerAwaitingPolyCommitments<'a, 'b> {
     bit_challenge: BitChallenge,
     bit_commitments: Vec<BitCommitment>,
     /// Aggregated commitment to the parties' bits
-    A: RistrettoPoint,
+    A: G1Projective,
     /// Aggregated commitment to the parties' bit blindings
-    S: RistrettoPoint,
+    S: G1Projective,
 }
 
 impl<'a, 'b> DealerAwaitingPolyCommitments<'a, 'b> {
@@ -166,8 +167,8 @@ impl<'a, 'b> DealerAwaitingPolyCommitments<'a, 'b> {
         }
 
         // Commit sums of T_1_j's and T_2_j's
-        let T_1: RistrettoPoint = poly_commitments.iter().map(|pc| pc.T_1_j).sum();
-        let T_2: RistrettoPoint = poly_commitments.iter().map(|pc| pc.T_2_j).sum();
+        let T_1: G1Projective = poly_commitments.iter().map(|pc| pc.T_1_j).sum();
+        let T_2: G1Projective = poly_commitments.iter().map(|pc| pc.T_2_j).sum();
 
         self.transcript.append_point(b"T_1", &T_1.compress());
         self.transcript.append_point(b"T_2", &T_2.compress());
@@ -211,10 +212,10 @@ pub struct DealerAwaitingProofShares<'a, 'b> {
     bit_commitments: Vec<BitCommitment>,
     poly_challenge: PolyChallenge,
     poly_commitments: Vec<PolyCommitment>,
-    A: RistrettoPoint,
-    S: RistrettoPoint,
-    T_1: RistrettoPoint,
-    T_2: RistrettoPoint,
+    A: G1Projective,
+    S: G1Projective,
+    T_1: G1Projective,
+    T_2: G1Projective,
 }
 
 impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
@@ -242,9 +243,9 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
             return Err(MPCError::MalformedProofShares { bad_shares });
         }
 
-        let t_x: Scalar = proof_shares.iter().map(|ps| ps.t_x).sum();
-        let t_x_blinding: Scalar = proof_shares.iter().map(|ps| ps.t_x_blinding).sum();
-        let e_blinding: Scalar = proof_shares.iter().map(|ps| ps.e_blinding).sum();
+        let t_x: Fq = proof_shares.iter().map(|ps| ps.t_x).sum();
+        let t_x_blinding: Fq = proof_shares.iter().map(|ps| ps.t_x_blinding).sum();
+        let e_blinding: Fq = proof_shares.iter().map(|ps| ps.e_blinding).sum();
 
         self.transcript.append_scalar(b"t_x", &t_x);
         self.transcript
@@ -255,16 +256,16 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let w = self.transcript.challenge_scalar(b"w");
         let Q = w * self.pc_gens.B;
 
-        let G_factors: Vec<Scalar> = iter::repeat(Scalar::one()).take(self.n * self.m).collect();
-        let H_factors: Vec<Scalar> = util::exp_iter(self.bit_challenge.y.invert())
+        let G_factors: Vec<Fq> = iter::repeat(Fq::from(1)).take(self.n * self.m).collect();
+        let H_factors: Vec<Fq> = util::exp_iter(self.bit_challenge.y.invert())
             .take(self.n * self.m)
             .collect();
 
-        let l_vec: Vec<Scalar> = proof_shares
+        let l_vec: Vec<Fq> = proof_shares
             .iter()
             .flat_map(|ps| ps.l_vec.clone().into_iter())
             .collect();
-        let r_vec: Vec<Scalar> = proof_shares
+        let r_vec: Vec<Fq> = proof_shares
             .iter()
             .flat_map(|ps| ps.r_vec.clone().into_iter())
             .collect();
@@ -281,10 +282,10 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         );
 
         Ok(RangeProof {
-            A: self.A.compress(),
-            S: self.S.compress(),
-            T_1: self.T_1.compress(),
-            T_2: self.T_2.compress(),
+            A: self.A,
+            S: self.S,
+            T_1: self.T_1,
+            T_2: self.T_2,
             t_x,
             t_x_blinding,
             e_blinding,

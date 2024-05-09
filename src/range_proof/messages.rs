@@ -9,6 +9,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::iter;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use ark_bn254::{Fq, G1Affine, G1Projective};
+use ark_ec::{Group, VariableBaseMSM};
 use curve25519_dalek::scalar::Scalar;
 
 use crate::generators::{BulletproofGens, PedersenGens};
@@ -16,40 +18,40 @@ use crate::generators::{BulletproofGens, PedersenGens};
 /// A commitment to the bits of a party's value.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 pub struct BitCommitment {
-    pub(super) V_j: CompressedRistretto,
-    pub(super) A_j: RistrettoPoint,
-    pub(super) S_j: RistrettoPoint,
+    pub(super) V_j: G1Projective,
+    pub(super) A_j: G1Projective,
+    pub(super) S_j: G1Projective,
 }
 
 /// Challenge values derived from all parties' [`BitCommitment`]s.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 pub struct BitChallenge {
-    pub(super) y: Scalar,
-    pub(super) z: Scalar,
+    pub(super) y: Fq,
+    pub(super) z: Fq,
 }
 
 /// A commitment to a party's polynomial coefficents.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 pub struct PolyCommitment {
-    pub(super) T_1_j: RistrettoPoint,
-    pub(super) T_2_j: RistrettoPoint,
+    pub(super) T_1_j: G1Projective,
+    pub(super) T_2_j: G1Projective,
 }
 
 /// Challenge values derived from all parties' [`PolyCommitment`]s.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 pub struct PolyChallenge {
-    pub(super) x: Scalar,
+    pub(super) x: Fq,
 }
 
 /// A party's proof share, ready for aggregation into the final
 /// [`RangeProof`](::RangeProof).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProofShare {
-    pub(super) t_x: Scalar,
-    pub(super) t_x_blinding: Scalar,
-    pub(super) e_blinding: Scalar,
-    pub(super) l_vec: Vec<Scalar>,
-    pub(super) r_vec: Vec<Scalar>,
+    pub(super) t_x: Fq,
+    pub(super) t_x_blinding: Fq,
+    pub(super) e_blinding: Fq,
+    pub(super) l_vec: Vec<Fq>,
+    pub(super) r_vec: Vec<Fq>,
 }
 
 impl ProofShare {
@@ -91,7 +93,6 @@ impl ProofShare {
         poly_commitment: &PolyCommitment,
         poly_challenge: &PolyChallenge,
     ) -> Result<(), ()> {
-        use curve25519_dalek::traits::{IsIdentity, VartimeMultiscalarMul};
 
         use crate::inner_product_proof::inner_product;
         use crate::util;
@@ -119,44 +120,45 @@ impl ProofShare {
         let h = self
             .r_vec
             .iter()
-            .zip(util::exp_iter(Scalar::from(2u64)))
+            .zip(util::exp_iter(Fq::from(2u64)))
             .zip(util::exp_iter(y_inv))
             .map(|((r_i, exp_2), exp_y_inv)| {
                 z + exp_y_inv * y_jn_inv * (-r_i) + exp_y_inv * y_jn_inv * (zz * z_j * exp_2)
             });
 
-        let P_check = RistrettoPoint::vartime_multiscalar_mul(
-            iter::once(Scalar::one())
-                .chain(iter::once(*x))
-                .chain(iter::once(-self.e_blinding))
-                .chain(g)
-                .chain(h),
+        let P_check: G1Projective = VariableBaseMSM::msm(
             iter::once(&bit_commitment.A_j)
                 .chain(iter::once(&bit_commitment.S_j))
                 .chain(iter::once(&pc_gens.B_blinding))
                 .chain(bp_gens.share(j).G(n))
                 .chain(bp_gens.share(j).H(n)),
+            iter::once(G1Affine::identity())
+                .chain(iter::once(*x))
+                .chain(iter::once(-self.e_blinding))
+                .chain(g)
+                .chain(h),
         );
-        if !P_check.is_identity() {
+        
+        if P_check != G1Affine::identity() {
             return Err(());
         }
 
-        let V_j = bit_commitment.V_j.decompress().ok_or(())?;
+        let V_j = Ok(bit_commitment.V_j);
 
         let sum_of_powers_y = util::sum_of_powers(&y, n);
-        let sum_of_powers_2 = util::sum_of_powers(&Scalar::from(2u64), n);
+        let sum_of_powers_2 = util::sum_of_powers(&Fq::from(2u64), n);
         let delta = (z - zz) * sum_of_powers_y * y_jn - z * zz * sum_of_powers_2 * z_j;
-        let t_check = RistrettoPoint::vartime_multiscalar_mul(
-            iter::once(zz * z_j)
-                .chain(iter::once(*x))
-                .chain(iter::once(x * x))
-                .chain(iter::once(delta - self.t_x))
-                .chain(iter::once(-self.t_x_blinding)),
+        let t_check = VariableBaseMSM::msm(
             iter::once(&V_j)
                 .chain(iter::once(&poly_commitment.T_1_j))
                 .chain(iter::once(&poly_commitment.T_2_j))
                 .chain(iter::once(&pc_gens.B))
                 .chain(iter::once(&pc_gens.B_blinding)),
+            iter::once(zz * z_j)
+                .chain(iter::once(*x))
+                .chain(iter::once(x * x))
+                .chain(iter::once(delta - self.t_x))
+                .chain(iter::once(-self.t_x_blinding)),
         );
 
         if t_check.is_identity() {

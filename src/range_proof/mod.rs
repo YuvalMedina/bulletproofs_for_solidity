@@ -8,10 +8,14 @@ extern crate rand;
 #[cfg(feature = "std")]
 use self::rand::thread_rng;
 use alloc::vec::Vec;
+use ark_ec::VariableBaseMSM;
+use ark_serialize::CanonicalDeserialize;
+use rand::random;
 
 use core::iter;
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use ark_bn254::{G1Affine, G1Projective, Fq};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::{IsIdentity, VartimeMultiscalarMul};
 use merlin::Transcript;
@@ -58,19 +62,19 @@ pub mod party;
 #[derive(Clone, Debug)]
 pub struct RangeProof {
     /// Commitment to the bits of the value
-    A: CompressedRistretto,
+    A: G1Projective, // CompressedRistretto
     /// Commitment to the blinding factors
-    S: CompressedRistretto,
+    S: G1Projective, // CompressedRistretto
     /// Commitment to the \\(t_1\\) coefficient of \\( t(x) \\)
-    T_1: CompressedRistretto,
+    T_1: G1Projective, // CompressedRistretto
     /// Commitment to the \\(t_2\\) coefficient of \\( t(x) \\)
-    T_2: CompressedRistretto,
+    T_2: G1Projective, // CompressedRistretto
     /// Evaluation of the polynomial \\(t(x)\\) at the challenge point \\(x\\)
-    t_x: Scalar,
+    t_x: G1Projective, // CompressedRistretto
     /// Blinding factor for the synthetic commitment to \\(t(x)\\)
-    t_x_blinding: Scalar,
+    t_x_blinding: Fq,
     /// Blinding factor for the synthetic commitment to the inner-product arguments
-    e_blinding: Scalar,
+    e_blinding: Fq,
     /// Proof data for the inner-product argument.
     ipp_proof: InnerProductProof,
 }
@@ -84,9 +88,6 @@ impl RangeProof {
     /// ```
     /// extern crate rand;
     /// use rand::thread_rng;
-    ///
-    /// extern crate curve25519_dalek;
-    /// use curve25519_dalek::scalar::Scalar;
     ///
     /// extern crate merlin;
     /// use merlin::Transcript;
@@ -137,10 +138,10 @@ impl RangeProof {
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
         v: u64,
-        v_blinding: &Scalar,
+        v_blinding: &Fq,
         n: usize,
         rng: &mut T,
-    ) -> Result<(RangeProof, CompressedRistretto), ProofError> {
+    ) -> Result<(RangeProof, G1Projective), ProofError> {
         let (p, Vs) = RangeProof::prove_multiple_with_rng(
             bp_gens,
             pc_gens,
@@ -163,9 +164,9 @@ impl RangeProof {
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
         v: u64,
-        v_blinding: &Scalar,
+        v_blinding: &Fq,
         n: usize,
-    ) -> Result<(RangeProof, CompressedRistretto), ProofError> {
+    ) -> Result<(RangeProof, G1Projective), ProofError> {
         RangeProof::prove_single_with_rng(
             bp_gens,
             pc_gens,
@@ -236,10 +237,10 @@ impl RangeProof {
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
         values: &[u64],
-        blindings: &[Scalar],
+        blindings: &[Fq],
         n: usize,
         rng: &mut T,
-    ) -> Result<(RangeProof, Vec<CompressedRistretto>), ProofError> {
+    ) -> Result<(RangeProof, Vec<G1Projective>), ProofError> {
         use self::dealer::*;
         use self::party::*;
 
@@ -296,9 +297,9 @@ impl RangeProof {
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
         values: &[u64],
-        blindings: &[Scalar],
+        blindings: &[Fq],
         n: usize,
-    ) -> Result<(RangeProof, Vec<CompressedRistretto>), ProofError> {
+    ) -> Result<(RangeProof, Vec<G1Projective>), ProofError> {
         RangeProof::prove_multiple_with_rng(
             bp_gens,
             pc_gens,
@@ -318,7 +319,7 @@ impl RangeProof {
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
-        V: &CompressedRistretto,
+        V: &G1Projective,
         n: usize,
         rng: &mut T,
     ) -> Result<(), ProofError> {
@@ -335,7 +336,7 @@ impl RangeProof {
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
-        V: &CompressedRistretto,
+        V: &G1Projective,
         n: usize,
     ) -> Result<(), ProofError> {
         self.verify_single_with_rng(bp_gens, pc_gens, transcript, V, n, &mut thread_rng())
@@ -347,7 +348,7 @@ impl RangeProof {
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
-        value_commitments: &[CompressedRistretto],
+        value_commitments: &[G1Projective],
         n: usize,
         rng: &mut T,
     ) -> Result<(), ProofError> {
@@ -393,7 +394,7 @@ impl RangeProof {
         let w = transcript.challenge_scalar(b"w");
 
         // Challenge value for batching statements to be verified
-        let c = Scalar::random(rng);
+        let c = Fq::from(random());
 
         let (x_sq, x_inv_sq, s) = self.ipp_proof.verification_scalars(n * m, transcript)?;
         let s_inv = s.iter().rev();
@@ -403,8 +404,8 @@ impl RangeProof {
 
         // Construct concat_z_and_2, an iterator of the values of
         // z^0 * \vec(2)^n || z^1 * \vec(2)^n || ... || z^(m-1) * \vec(2)^n
-        let powers_of_2: Vec<Scalar> = util::exp_iter(Scalar::from(2u64)).take(n).collect();
-        let concat_z_and_2: Vec<Scalar> = util::exp_iter(z)
+        let powers_of_2: Vec<Fq> = util::exp_iter(Fq::from(2u64)).take(n).collect();
+        let concat_z_and_2: Vec<Fq> = util::exp_iter(z)
             .take(m)
             .flat_map(|exp_z| powers_of_2.iter().map(move |exp_2| exp_2 * exp_z))
             .collect();
@@ -418,18 +419,7 @@ impl RangeProof {
         let value_commitment_scalars = util::exp_iter(z).take(m).map(|z_exp| c * zz * z_exp);
         let basepoint_scalar = w * (self.t_x - a * b) + c * (delta(n, m, &y, &z) - self.t_x);
 
-        let mega_check = RistrettoPoint::optional_multiscalar_mul(
-            iter::once(Scalar::one())
-                .chain(iter::once(x))
-                .chain(iter::once(c * x))
-                .chain(iter::once(c * x * x))
-                .chain(x_sq.iter().cloned())
-                .chain(x_inv_sq.iter().cloned())
-                .chain(iter::once(-self.e_blinding - c * self.t_x_blinding))
-                .chain(iter::once(basepoint_scalar))
-                .chain(g)
-                .chain(h)
-                .chain(value_commitment_scalars),
+        let mega_check = VariableBaseMSM::msm_unchecked(
             iter::once(self.A.decompress())
                 .chain(iter::once(self.S.decompress()))
                 .chain(iter::once(self.T_1.decompress()))
@@ -441,6 +431,17 @@ impl RangeProof {
                 .chain(bp_gens.G(n, m).map(|&x| Some(x)))
                 .chain(bp_gens.H(n, m).map(|&x| Some(x)))
                 .chain(value_commitments.iter().map(|V| V.decompress())),
+            iter::once(G1Affine::identity())
+                .chain(iter::once(x))
+                .chain(iter::once(c * x))
+                .chain(iter::once(c * x * x))
+                .chain(x_sq.iter().cloned())
+                .chain(x_inv_sq.iter().cloned())
+                .chain(iter::once(-self.e_blinding - c * self.t_x_blinding))
+                .chain(iter::once(basepoint_scalar))
+                .chain(g)
+                .chain(h)
+                .chain(value_commitment_scalars),
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
@@ -511,17 +512,14 @@ impl RangeProof {
 
         use crate::util::read32;
 
-        let A = CompressedRistretto(read32(&slice[0 * 32..]));
-        let S = CompressedRistretto(read32(&slice[1 * 32..]));
-        let T_1 = CompressedRistretto(read32(&slice[2 * 32..]));
-        let T_2 = CompressedRistretto(read32(&slice[3 * 32..]));
+        let A = G1Projective(read32(&slice[0 * 32..]));
+        let S = G1Projective(read32(&slice[1 * 32..]));
+        let T_1 = G1Projective(read32(&slice[2 * 32..]));
+        let T_2 = G1Projective(read32(&slice[3 * 32..]));
 
-        let t_x = Scalar::from_canonical_bytes(read32(&slice[4 * 32..]))
-            .ok_or(ProofError::FormatError)?;
-        let t_x_blinding = Scalar::from_canonical_bytes(read32(&slice[5 * 32..]))
-            .ok_or(ProofError::FormatError)?;
-        let e_blinding = Scalar::from_canonical_bytes(read32(&slice[6 * 32..]))
-            .ok_or(ProofError::FormatError)?;
+        let t_x: Fq = CanonicalDeserialize::deserialize_compressed(read32(&slice[4 * 32..])).unwrap();
+        let t_x_blinding: Fq = CanonicalDeserialize::deserialize_compressed(read32(&slice[5 * 32..])).unwrap();
+        let e_blinding: Fq = CanonicalDeserialize::deserialize_compressed(read32(&slice[6 * 32..])).unwrap();
 
         let ipp_proof = InnerProductProof::from_bytes(&slice[7 * 32..])?;
 
@@ -584,9 +582,9 @@ impl<'de> Deserialize<'de> for RangeProof {
 /// \\[
 /// \delta(y,z) = (z - z^{2}) \langle \mathbf{1}, {\mathbf{y}}^{n \cdot m} \rangle - \sum_{j=0}^{m-1} z^{j+3} \cdot \langle \mathbf{1}, {\mathbf{2}}^{n \cdot m} \rangle
 /// \\]
-fn delta(n: usize, m: usize, y: &Scalar, z: &Scalar) -> Scalar {
+fn delta(n: usize, m: usize, y: &Fq, z: &Fq) -> Fq {
     let sum_y = util::sum_of_powers(y, n * m);
-    let sum_2 = util::sum_of_powers(&Scalar::from(2u64), n);
+    let sum_2 = util::sum_of_powers(&Fq::from(2u64), n);
     let sum_z = util::sum_of_powers(z, m);
 
     (z - z * z) * sum_y - z * z * z * sum_2 * sum_z
@@ -601,8 +599,8 @@ mod tests {
     #[test]
     fn test_delta() {
         let mut rng = rand::thread_rng();
-        let y = Scalar::random(&mut rng);
-        let z = Scalar::random(&mut rng);
+        let y = Fq::from(random());
+        let z =  Fq::from(random());
 
         // Choose n = 256 to ensure we overflow the group order during
         // the computation, to check that that's done correctly
@@ -611,9 +609,9 @@ mod tests {
         // code copied from previous implementation
         let z2 = z * z;
         let z3 = z2 * z;
-        let mut power_g = Scalar::zero();
-        let mut exp_y = Scalar::one(); // start at y^0 = 1
-        let mut exp_2 = Scalar::one(); // start at 2^0 = 1
+        let mut power_g = Fq::from(0);
+        let mut exp_y = Fq::from(0); // start at y^0 = 1
+        let mut exp_2 = Fq::from(0); // start at 2^0 = 1
         for _ in 0..n {
             power_g += (z - z2) * exp_y - z3 * exp_2;
 
@@ -651,7 +649,7 @@ mod tests {
             // 0. Create witness data
             let (min, max) = (0u64, ((1u128 << n) - 1) as u64);
             let values: Vec<u64> = (0..m).map(|_| rng.gen_range(min, max)).collect();
-            let blindings: Vec<Scalar> = (0..m).map(|_| Scalar::random(&mut rng)).collect();
+            let blindings: Vec<Fq> = (0..m).map(|_|  Fq::from(random())).collect();
 
             // 1. Create the proof
             let mut transcript = Transcript::new(b"AggregatedRangeProofTest");
