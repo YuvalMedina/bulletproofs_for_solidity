@@ -1,9 +1,7 @@
 #![allow(non_snake_case)]
 //! Definition of the proof struct.
 
-use curve25519_dalek::ristretto::CompressedRistretto;
-use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::{Identity, IsIdentity};
+use ark_bn254::{Fr, G1Projective};
 
 use crate::errors::R1CSError;
 use crate::inner_product_proof::InnerProductProof;
@@ -35,34 +33,34 @@ const TWO_PHASE_COMMITMENTS: u8 = 1;
 #[allow(non_snake_case)]
 pub struct R1CSProof {
     /// Commitment to the values of input wires in the first phase.
-    pub(super) A_I1: CompressedRistretto,
+    pub(super) A_I1: G1Projective,
     /// Commitment to the values of output wires in the first phase.
-    pub(super) A_O1: CompressedRistretto,
+    pub(super) A_O1: G1Projective,
     /// Commitment to the blinding factors in the first phase.
-    pub(super) S1: CompressedRistretto,
+    pub(super) S1: G1Projective,
     /// Commitment to the values of input wires in the second phase.
-    pub(super) A_I2: CompressedRistretto,
+    pub(super) A_I2: G1Projective,
     /// Commitment to the values of output wires in the second phase.
-    pub(super) A_O2: CompressedRistretto,
+    pub(super) A_O2: G1Projective,
     /// Commitment to the blinding factors in the second phase.
-    pub(super) S2: CompressedRistretto,
+    pub(super) S2: G1Projective,
     /// Commitment to the \\(t_1\\) coefficient of \\( t(x) \\)
-    pub(super) T_1: CompressedRistretto,
+    pub(super) T_1: G1Projective,
     /// Commitment to the \\(t_3\\) coefficient of \\( t(x) \\)
-    pub(super) T_3: CompressedRistretto,
+    pub(super) T_3: G1Projective,
     /// Commitment to the \\(t_4\\) coefficient of \\( t(x) \\)
-    pub(super) T_4: CompressedRistretto,
+    pub(super) T_4: G1Projective,
     /// Commitment to the \\(t_5\\) coefficient of \\( t(x) \\)
-    pub(super) T_5: CompressedRistretto,
+    pub(super) T_5: G1Projective,
     /// Commitment to the \\(t_6\\) coefficient of \\( t(x) \\)
-    pub(super) T_6: CompressedRistretto,
+    pub(super) T_6: G1Projective,
     /// Evaluation of the polynomial \\(t(x)\\) at the challenge point \\(x\\)
-    pub(super) t_x: Scalar,
+    pub(super) t_x: Fr,
     /// Blinding factor for the synthetic commitment to \\( t(x) \\)
-    pub(super) t_x_blinding: Scalar,
+    pub(super) t_x_blinding: Fr,
     /// Blinding factor for the synthetic commitment to the
     /// inner-product arguments
-    pub(super) e_blinding: Scalar,
+    pub(super) e_blinding: Fr,
     /// Proof data for the inner-product argument.
     pub(super) ipp_proof: InnerProductProof,
 }
@@ -156,30 +154,30 @@ impl R1CSProof {
             }};
         }
 
-        let A_I1 = CompressedRistretto(read32!());
-        let A_O1 = CompressedRistretto(read32!());
-        let S1 = CompressedRistretto(read32!());
+        let A_I1 = G1Projective(read32!());
+        let A_O1 = G1Projective(read32!());
+        let S1 = G1Projective(read32!());
         let (A_I2, A_O2, S2) = if version == ONE_PHASE_COMMITMENTS {
             (
-                CompressedRistretto::identity(),
-                CompressedRistretto::identity(),
-                CompressedRistretto::identity(),
+                G1Affine::identity(),
+                G1Affine::identity(),
+                G1Affine::identity(),
             )
         } else {
             (
-                CompressedRistretto(read32!()),
-                CompressedRistretto(read32!()),
-                CompressedRistretto(read32!()),
+                G1Projective(read32!()),
+                G1Projective(read32!()),
+                G1Projective(read32!()),
             )
         };
-        let T_1 = CompressedRistretto(read32!());
-        let T_3 = CompressedRistretto(read32!());
-        let T_4 = CompressedRistretto(read32!());
-        let T_5 = CompressedRistretto(read32!());
-        let T_6 = CompressedRistretto(read32!());
-        let t_x = Scalar::from_canonical_bytes(read32!()).ok_or(R1CSError::FormatError)?;
-        let t_x_blinding = Scalar::from_canonical_bytes(read32!()).ok_or(R1CSError::FormatError)?;
-        let e_blinding = Scalar::from_canonical_bytes(read32!()).ok_or(R1CSError::FormatError)?;
+        let T_1 = G1Projective(read32!());
+        let T_3 = G1Projective(read32!());
+        let T_4 = G1Projective(read32!());
+        let T_5 = G1Projective(read32!());
+        let T_6 = G1Projective(read32!());
+        let t_x = Fr::from(read32!()).ok_or(R1CSError::FormatError)?;
+        let t_x_blinding = Fr::from(read32!()).ok_or(R1CSError::FormatError)?;
+        let e_blinding = Fr::from(read32!()).ok_or(R1CSError::FormatError)?;
 
         // XXX: IPPProof from_bytes gives ProofError.
         let ipp_proof = InnerProductProof::from_bytes(slice).map_err(|_| R1CSError::FormatError)?;

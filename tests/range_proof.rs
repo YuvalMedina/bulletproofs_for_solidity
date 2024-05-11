@@ -1,9 +1,10 @@
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand_core::SeedableRng;
 
 use rand_chacha::ChaChaRng;
 
-use curve25519_dalek::ristretto::CompressedRistretto;
-use curve25519_dalek::scalar::Scalar;
+use ark_bn254::{G1Projective, Fr};
+use ark_ff::UniformRand;
 
 use merlin::Transcript;
 
@@ -42,42 +43,42 @@ fn deserialize_and_verify() {
         ],
     ];
 
-    let vc: Vec<CompressedRistretto> = Vec::from([
-        CompressedRistretto::from_slice(
+    let vc: Vec<G1Projective> = Vec::from([
+        G1Projective::deserialize_compressed(
             &hex::decode("90b0c2fe57934dff9f5396e135e7d72b82b3c5393e1843178918eb2cf28a5f3c")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("74256a3e2a7fe948210c4095195ae4db3e3498c6c5fddc2afb226c0f1e97e468")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("7e348def6d03dc7bcbe7e03736ca2898e2efa9f6ff8ae4ed1cb5252ec1744075")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("861859f5d4c14f5d6d7ad88dcf43c9a98064a7d8702ffc9bad9eba2ed766702a")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("4c09b1260c833fefe25b1c3d3becc80979beca5e864d57fcb410bb15c7ba5c14")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("08cf26bfdf2e6b731536f5e48b4c0ac7b5fc846d36aaa3fe0d28f07c207f0814")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("a6e2d1c2770333c9a8a5ac10d9eb28e8609d5954428261335b2fd6ff0e0e8d69")
-                .unwrap(),
-        ),
-        CompressedRistretto::from_slice(
+                .unwrap()[..],
+        ).unwrap(),
+        G1Projective::deserialize_compressed(
             &hex::decode("30beef3b58fd2c18dde771d5c77e32f8dc01361e284aef517bce54a5c74c4665")
-                .unwrap(),
-        ),
+                .unwrap()[..],
+        ).unwrap(),
     ])
     .iter()
-    .map(|res| res.unwrap())
+    .map(|res| *res)
     .collect();
 
     let pc_gens = PedersenGens::default();
@@ -112,7 +113,7 @@ fn generate_test_vectors() {
 
     let values = vec![0u64, 1, 2, 3, 4, 5, 6, 7];
     let blindings = (0..8)
-        .map(|_| Scalar::random(&mut test_rng))
+        .map(|_| Fr::rand(&mut test_rng))
         .collect::<Vec<_>>();
 
     for n in &[8, 16, 32, 64] {
@@ -132,7 +133,9 @@ fn generate_test_vectors() {
             println!("proof = \"{}\"", hex::encode(proof.to_bytes()));
             println!("vc = [");
             for com in &value_commitments {
-                println!("    \"{}\"", hex::encode(com.as_bytes()));
+                let mut com_bytes = Vec::new();
+                com.serialize_compressed(&mut com_bytes).unwrap();
+                println!("    \"{}\"", hex::encode(com_bytes));
             }
             println!("]\n");
         }

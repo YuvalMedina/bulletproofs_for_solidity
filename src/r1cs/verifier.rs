@@ -2,9 +2,8 @@
 
 use core::borrow::BorrowMut;
 use core::mem;
-use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::VartimeMultiscalarMul;
+use ark_bn254::{G1Affine, G1Projective, Fr};
+use ark_ec::{VariableBaseMSM, Group};
 use merlin::Transcript;
 
 use super::{
@@ -38,7 +37,7 @@ pub struct Verifier<T: BorrowMut<Transcript>> {
     /// `Missing`), so the `num_vars` isn't kept implicitly in the
     /// variable assignments.
     num_vars: usize,
-    V: Vec<CompressedRistretto>,
+    V: Vec<G1Projective>,
 
     /// This list holds closures that will be called in the second phase of the protocol,
     /// when non-randomized variables are committed.
@@ -81,15 +80,15 @@ impl<T: BorrowMut<Transcript>> ConstraintSystem for Verifier<T> {
         let o_var = Variable::MultiplierOutput(var);
 
         // Constrain l,r,o:
-        left.terms.push((l_var, -Scalar::ONE));
-        right.terms.push((r_var, -Scalar::ONE));
+        left.terms.push((l_var, -Fr::from(1)));
+        right.terms.push((r_var, -Fr::from(1)));
         self.constrain(left);
         self.constrain(right);
 
         (l_var, r_var, o_var)
     }
 
-    fn allocate(&mut self, _: Option<Scalar>) -> Result<Variable, R1CSError> {
+    fn allocate(&mut self, _: Option<Fr>) -> Result<Variable, R1CSError> {
         match self.pending_multiplier {
             None => {
                 let i = self.num_vars;
@@ -106,7 +105,7 @@ impl<T: BorrowMut<Transcript>> ConstraintSystem for Verifier<T> {
 
     fn allocate_multiplier(
         &mut self,
-        _: Option<(Scalar, Scalar)>,
+        _: Option<(Fr, Fr)>,
     ) -> Result<(Variable, Variable, Variable), R1CSError> {
         let var = self.num_vars;
         self.num_vars += 1;
@@ -161,13 +160,13 @@ impl<T: BorrowMut<Transcript>> ConstraintSystem for RandomizingVerifier<T> {
         self.verifier.multiply(left, right)
     }
 
-    fn allocate(&mut self, assignment: Option<Scalar>) -> Result<Variable, R1CSError> {
+    fn allocate(&mut self, assignment: Option<Fr>) -> Result<Variable, R1CSError> {
         self.verifier.allocate(assignment)
     }
 
     fn allocate_multiplier(
         &mut self,
-        input_assignments: Option<(Scalar, Scalar)>,
+        input_assignments: Option<(Fr, Fr)>,
     ) -> Result<(Variable, Variable, Variable), R1CSError> {
         self.verifier.allocate_multiplier(input_assignments)
     }
@@ -182,7 +181,7 @@ impl<T: BorrowMut<Transcript>> ConstraintSystem for RandomizingVerifier<T> {
 }
 
 impl<T: BorrowMut<Transcript>> RandomizedConstraintSystem for RandomizingVerifier<T> {
-    fn challenge_scalar(&mut self, label: &'static [u8]) -> Scalar {
+    fn challenge_scalar(&mut self, label: &'static [u8]) -> Fr {
         self.verifier
             .transcript
             .borrow_mut()
@@ -243,7 +242,7 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
     ///
     /// Returns a pair of a Pedersen commitment (as a compressed Ristretto point),
     /// and a [`Variable`] corresponding to it, which can be used to form constraints.
-    pub fn commit(&mut self, commitment: CompressedRistretto) -> Variable {
+    pub fn commit(&mut self, commitment: G1Projective) -> Variable {
         let i = self.V.len();
         self.V.push(commitment);
 
@@ -270,16 +269,16 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
     /// because they're not needed to construct the proof).
     fn flattened_constraints(
         &mut self,
-        z: &Scalar,
-    ) -> (Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Scalar) {
+        z: &Fr,
+    ) -> (Vec<Fr>, Vec<Fr>, Vec<Fr>, Vec<Fr>, Fr) {
         let n = self.num_vars;
         let m = self.V.len();
 
-        let mut wL = vec![Scalar::ZERO; n];
-        let mut wR = vec![Scalar::ZERO; n];
-        let mut wO = vec![Scalar::ZERO; n];
-        let mut wV = vec![Scalar::ZERO; m];
-        let mut wc = Scalar::ZERO;
+        let mut wL = vec![Fr::from(0); n];
+        let mut wR = vec![Fr::from(0); n];
+        let mut wO = vec![Fr::from(0); n];
+        let mut wV = vec![Fr::from(0); m];
+        let mut wc = Fr::from(0);
 
         let mut exp_z = *z;
         for lc in self.constraints.iter() {
@@ -423,17 +422,17 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
         let y_inv = y.invert();
         let y_inv_vec = util::exp_iter(y_inv)
             .take(padded_n)
-            .collect::<Vec<Scalar>>();
+            .collect::<Vec<Fr>>();
         let yneg_wR = wR
             .into_iter()
             .zip(y_inv_vec.iter())
             .map(|(wRi, exp_y_inv)| wRi * exp_y_inv)
-            .chain(iter::repeat(Scalar::ZERO).take(pad))
-            .collect::<Vec<Scalar>>();
+            .chain(iter::repeat(Fr::from(0)).take(pad))
+            .collect::<Vec<Fr>>();
 
         let delta = inner_product(&yneg_wR[0..n], &wL);
 
-        let u_for_g = iter::repeat(Scalar::ONE)
+        let u_for_g = iter::repeat(Fr::from(1))
             .take(n1)
             .chain(iter::repeat(u).take(n2 + pad));
         let u_for_h = u_for_g.clone();
@@ -449,10 +448,10 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
             .iter()
             .zip(u_for_h)
             .zip(s.iter().rev().take(padded_n))
-            .zip(wL.into_iter().chain(iter::repeat(Scalar::ZERO).take(pad)))
-            .zip(wO.into_iter().chain(iter::repeat(Scalar::ZERO).take(pad)))
+            .zip(wL.into_iter().chain(iter::repeat(Fr::from(0)).take(pad)))
+            .zip(wO.into_iter().chain(iter::repeat(Fr::from(0)).take(pad)))
             .map(|((((y_inv_i, u_or_1), s_i_inv), wLi), wOi)| {
-                u_or_1 * (y_inv_i * (x * wLi + wOi - b * s_i_inv) - Scalar::ONE)
+                u_or_1 * (y_inv_i * (x * wLi + wOi - b * s_i_inv) - Fr::from(1))
             });
 
         // Create a `TranscriptRng` from the transcript. The verifier
@@ -464,7 +463,7 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
             .borrow_mut()
             .build_rng()
             .finalize(&mut thread_rng());
-        let r = Scalar::random(&mut rng);
+        let r = Fr::from(&mut rng);
 
         let xx = x * x;
         let rxx = r * xx;
@@ -474,7 +473,21 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
         let T_scalars = [r * x, rxx * x, rxx * xx, rxx * xxx, rxx * xx * xx];
         let T_points = [proof.T_1, proof.T_3, proof.T_4, proof.T_5, proof.T_6];
 
-        let mega_check = RistrettoPoint::optional_multiscalar_mul(
+        let mega_check = VariableBaseMSM::msm(
+            iter::once(proof.A_I1.decompress())
+                .chain(iter::once(proof.A_O1.decompress()))
+                .chain(iter::once(proof.S1.decompress()))
+                .chain(iter::once(proof.A_I2.decompress()))
+                .chain(iter::once(proof.A_O2.decompress()))
+                .chain(iter::once(proof.S2.decompress()))
+                .chain(self.V.iter().map(|V_i| V_i.decompress()))
+                .chain(T_points.iter().map(|T_i| T_i.decompress()))
+                .chain(iter::once(Some(pc_gens.B)))
+                .chain(iter::once(Some(pc_gens.B_blinding)))
+                .chain(gens.G(padded_n).map(|&G_i| Some(G_i)))
+                .chain(gens.H(padded_n).map(|&H_i| Some(H_i)))
+                .chain(proof.ipp_proof.L_vec.iter().map(|L_i| L_i.decompress()))
+                .chain(proof.ipp_proof.R_vec.iter().map(|R_i| R_i.decompress())),
             iter::once(x) // A_I1
                 .chain(iter::once(xx)) // A_O1
                 .chain(iter::once(xxx)) // S1
@@ -491,24 +504,8 @@ impl<T: BorrowMut<Transcript>> Verifier<T> {
                 .chain(h_scalars) // H
                 .chain(u_sq.iter().cloned()) // ipp_proof.L_vec
                 .chain(u_inv_sq.iter().cloned()), // ipp_proof.R_vec
-            iter::once(proof.A_I1.decompress())
-                .chain(iter::once(proof.A_O1.decompress()))
-                .chain(iter::once(proof.S1.decompress()))
-                .chain(iter::once(proof.A_I2.decompress()))
-                .chain(iter::once(proof.A_O2.decompress()))
-                .chain(iter::once(proof.S2.decompress()))
-                .chain(self.V.iter().map(|V_i| V_i.decompress()))
-                .chain(T_points.iter().map(|T_i| T_i.decompress()))
-                .chain(iter::once(Some(pc_gens.B)))
-                .chain(iter::once(Some(pc_gens.B_blinding)))
-                .chain(gens.G(padded_n).map(|&G_i| Some(G_i)))
-                .chain(gens.H(padded_n).map(|&H_i| Some(H_i)))
-                .chain(proof.ipp_proof.L_vec.iter().map(|L_i| L_i.decompress()))
-                .chain(proof.ipp_proof.R_vec.iter().map(|R_i| R_i.decompress())),
         )
         .ok_or_else(|| R1CSError::VerificationError)?;
-
-        use curve25519_dalek::traits::IsIdentity;
 
         if !mega_check.is_identity() {
             return Err(R1CSError::VerificationError);

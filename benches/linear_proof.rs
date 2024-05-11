@@ -5,7 +5,6 @@ extern crate criterion;
 use criterion::Criterion;
 
 extern crate bulletproofs;
-extern crate curve25519_dalek;
 extern crate merlin;
 extern crate rand;
 

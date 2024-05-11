@@ -1,6 +1,6 @@
 //! Definition of linear combinations.
 
-use curve25519_dalek::scalar::Scalar;
+use ark_bn254::Fr;
 use std::iter::FromIterator;
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -22,12 +22,12 @@ pub enum Variable {
 impl From<Variable> for LinearCombination {
     fn from(v: Variable) -> LinearCombination {
         LinearCombination {
-            terms: vec![(v, Scalar::ONE)],
+            terms: vec![(v, Fr::from(1))],
         }
     }
 }
 
-impl<S: Into<Scalar>> From<S> for LinearCombination {
+impl<S: Into<Fr>> From<S> for LinearCombination {
     fn from(s: S) -> LinearCombination {
         LinearCombination {
             terms: vec![(Variable::One(), s.into())],
@@ -61,7 +61,7 @@ impl<L: Into<LinearCombination>> Sub<L> for Variable {
     }
 }
 
-impl<S: Into<Scalar>> Mul<S> for Variable {
+impl<S: Into<Fr>> Mul<S> for Variable {
     type Output = LinearCombination;
 
     fn mul(self, other: S) -> Self::Output {
@@ -73,27 +73,27 @@ impl<S: Into<Scalar>> Mul<S> for Variable {
 
 // Arithmetic on scalars with variables produces linear combinations
 
-impl Add<Variable> for Scalar {
+impl Add<Variable> for Fr {
     type Output = LinearCombination;
 
     fn add(self, other: Variable) -> Self::Output {
         LinearCombination {
-            terms: vec![(Variable::One(), self), (other, Scalar::ONE)],
+            terms: vec![(Variable::One(), self), (other, Fr::from(1))],
         }
     }
 }
 
-impl Sub<Variable> for Scalar {
+impl Sub<Variable> for Fr {
     type Output = LinearCombination;
 
     fn sub(self, other: Variable) -> Self::Output {
         LinearCombination {
-            terms: vec![(Variable::One(), self), (other, -Scalar::ONE)],
+            terms: vec![(Variable::One(), self), (other, -Fr::from(1))],
         }
     }
 }
 
-impl Mul<Variable> for Scalar {
+impl Mul<Variable> for Fr {
     type Output = LinearCombination;
 
     fn mul(self, other: Variable) -> Self::Output {
@@ -108,7 +108,7 @@ impl Mul<Variable> for Scalar {
 /// `(Variable, Scalar)` pair.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinearCombination {
-    pub(super) terms: Vec<(Variable, Scalar)>,
+    pub(super) terms: Vec<(Variable, Fr)>,
 }
 
 impl Default for LinearCombination {
@@ -117,10 +117,10 @@ impl Default for LinearCombination {
     }
 }
 
-impl FromIterator<(Variable, Scalar)> for LinearCombination {
+impl FromIterator<(Variable, Fr)> for LinearCombination {
     fn from_iter<T>(iter: T) -> Self
     where
-        T: IntoIterator<Item = (Variable, Scalar)>,
+        T: IntoIterator<Item = (Variable, Fr)>,
     {
         LinearCombination {
             terms: iter.into_iter().collect(),
@@ -128,10 +128,10 @@ impl FromIterator<(Variable, Scalar)> for LinearCombination {
     }
 }
 
-impl<'a> FromIterator<&'a (Variable, Scalar)> for LinearCombination {
+impl<'a> FromIterator<&'a (Variable, Fr)> for LinearCombination {
     fn from_iter<T>(iter: T) -> Self
     where
-        T: IntoIterator<Item = &'a (Variable, Scalar)>,
+        T: IntoIterator<Item = &'a (Variable, Fr)>,
     {
         LinearCombination {
             terms: iter.into_iter().cloned().collect(),
@@ -160,14 +160,14 @@ impl<L: Into<LinearCombination>> Sub<L> for LinearCombination {
     }
 }
 
-impl Mul<LinearCombination> for Scalar {
+impl Mul<LinearCombination> for Fr {
     type Output = LinearCombination;
 
     fn mul(self, other: LinearCombination) -> Self::Output {
         let out_terms = other
             .terms
             .into_iter()
-            .map(|(var, scalar)| (var, scalar * self))
+            .map(|(var, Fr)| (var, Fr * self))
             .collect();
         LinearCombination { terms: out_terms }
     }
@@ -184,7 +184,7 @@ impl Neg for LinearCombination {
     }
 }
 
-impl<S: Into<Scalar>> Mul<S> for LinearCombination {
+impl<S: Into<Fr>> Mul<S> for LinearCombination {
     type Output = Self;
 
     fn mul(mut self, other: S) -> Self::Output {

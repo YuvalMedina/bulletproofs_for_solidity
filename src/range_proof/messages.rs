@@ -8,49 +8,49 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::iter;
-use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::VartimeMultiscalarMul;
+use ark_bn254::{Fr, G1Affine, G1Projective};
+use ark_ec::{CurveGroup, VariableBaseMSM};
+use ark_ff::{Field, Zero};
 
 use crate::generators::{BulletproofGens, PedersenGens};
 
 /// A commitment to the bits of a party's value.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct BitCommitment {
-    pub(super) V_j: CompressedRistretto,
-    pub(super) A_j: RistrettoPoint,
-    pub(super) S_j: RistrettoPoint,
+    pub(super) V_j: G1Projective,
+    pub(super) A_j: G1Projective,
+    pub(super) S_j: G1Projective,
 }
 
 /// Challenge values derived from all parties' [`BitCommitment`]s.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct BitChallenge {
-    pub(super) y: Scalar,
-    pub(super) z: Scalar,
+    pub(super) y: Fr,
+    pub(super) z: Fr,
 }
 
 /// A commitment to a party's polynomial coefficents.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct PolyCommitment {
-    pub(super) T_1_j: RistrettoPoint,
-    pub(super) T_2_j: RistrettoPoint,
+    pub(super) T_1_j: G1Projective,
+    pub(super) T_2_j: G1Projective,
 }
 
 /// Challenge values derived from all parties' [`PolyCommitment`]s.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct PolyChallenge {
-    pub(super) x: Scalar,
+    pub(super) x: Fr,
 }
 
 /// A party's proof share, ready for aggregation into the final
 /// [`RangeProof`](::RangeProof).
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct ProofShare {
-    pub(super) t_x: Scalar,
-    pub(super) t_x_blinding: Scalar,
-    pub(super) e_blinding: Scalar,
-    pub(super) l_vec: Vec<Scalar>,
-    pub(super) r_vec: Vec<Scalar>,
+    pub(super) t_x: Fr,
+    pub(super) t_x_blinding: Fr,
+    pub(super) e_blinding: Fr,
+    pub(super) l_vec: Vec<Fr>,
+    pub(super) r_vec: Vec<Fr>,
 }
 
 impl ProofShare {
@@ -94,8 +94,6 @@ impl ProofShare {
     ) -> Result<(), ()> {
         use crate::inner_product_proof::inner_product;
         use crate::util;
-        use core::ops::Not;
-        use group::Group;
 
         let n = self.l_vec.len();
 
@@ -106,11 +104,11 @@ impl ProofShare {
 
         // Precompute some variables
         let zz = z * z;
-        let minus_z = -z;
+        let minus_z = Fr::from(-1) * z;
         let z_j = util::scalar_exp_vartime(z, j as u64); // z^j
         let y_jn = util::scalar_exp_vartime(y, (j * n) as u64); // y^(j*n)
-        let y_jn_inv = y_jn.invert(); // y^(-j*n)
-        let y_inv = y.invert(); // y^(-1)
+        let y_jn_inv = y_jn.inverse().unwrap(); // y^(-j*n)
+        let y_inv = y.inverse().unwrap(); // y^(-1)
 
         if self.t_x != inner_product(&self.l_vec, &self.r_vec) {
             return Err(());
@@ -120,47 +118,51 @@ impl ProofShare {
         let h = self
             .r_vec
             .iter()
-            .zip(util::exp_iter(Scalar::from(2u64)))
+            .zip(util::exp_iter(Fr::from(2u64)))
             .zip(util::exp_iter(y_inv))
             .map(|((r_i, exp_2), exp_y_inv)| {
-                z + exp_y_inv * y_jn_inv * (-r_i) + exp_y_inv * y_jn_inv * (zz * z_j * exp_2)
+                *z + exp_y_inv * y_jn_inv * Fr::from(-1) * *(r_i) + exp_y_inv * y_jn_inv * (zz * z_j * exp_2)
             });
 
-        let P_check = RistrettoPoint::vartime_multiscalar_mul(
-            iter::once(Scalar::ONE)
+        let P_check: G1Projective = {
+            let bases: Vec<G1Affine> = iter::once(G1Projective::into_affine(bit_commitment.A_j))
+                .chain(iter::once(G1Projective::into_affine(bit_commitment.S_j)))
+                .chain(iter::once(G1Projective::into_affine(pc_gens.B_blinding)))
+                .chain(bp_gens.share(j).G(n).map(|p| G1Projective::into_affine(*p)))
+                .chain(bp_gens.share(j).H(n).map(|p| G1Projective::into_affine(*p))).collect();
+            let scalars: Vec<Fr> = iter::once(Fr::from(1))
                 .chain(iter::once(*x))
                 .chain(iter::once(-self.e_blinding))
                 .chain(g)
-                .chain(h),
-            iter::once(&bit_commitment.A_j)
-                .chain(iter::once(&bit_commitment.S_j))
-                .chain(iter::once(&pc_gens.B_blinding))
-                .chain(bp_gens.share(j).G(n))
-                .chain(bp_gens.share(j).H(n)),
-        );
-        if P_check.is_identity().not().into() {
+                .chain(h).collect();
+            
+            VariableBaseMSM::msm(&bases, &scalars)
+        }.unwrap();
+        if !P_check.is_zero() {
             return Err(());
         }
 
-        let V_j = bit_commitment.V_j.decompress().ok_or(())?;
+        let V_j: G1Projective = bit_commitment.V_j;
 
         let sum_of_powers_y = util::sum_of_powers(&y, n);
-        let sum_of_powers_2 = util::sum_of_powers(&Scalar::from(2u64), n);
-        let delta = (z - zz) * sum_of_powers_y * y_jn - z * zz * sum_of_powers_2 * z_j;
-        let t_check = RistrettoPoint::vartime_multiscalar_mul(
-            iter::once(zz * z_j)
+        let sum_of_powers_2 = util::sum_of_powers(&Fr::from(2u64), n);
+        let delta = (*z - zz) * sum_of_powers_y * y_jn - *z * zz * sum_of_powers_2 * z_j;
+        let t_check: G1Projective = {
+            let bases: Vec<G1Affine> = iter::once(G1Projective::into_affine(V_j))
+                .chain(iter::once(G1Projective::into_affine(poly_commitment.T_1_j)))
+                .chain(iter::once(G1Projective::into_affine(poly_commitment.T_2_j)))
+                .chain(iter::once(G1Projective::into_affine(pc_gens.B)))
+                .chain(iter::once(G1Projective::into_affine(pc_gens.B_blinding))).collect();
+            let scalars: Vec<Fr> = iter::once(zz * z_j)
                 .chain(iter::once(*x))
                 .chain(iter::once(x * x))
                 .chain(iter::once(delta - self.t_x))
-                .chain(iter::once(-self.t_x_blinding)),
-            iter::once(&V_j)
-                .chain(iter::once(&poly_commitment.T_1_j))
-                .chain(iter::once(&poly_commitment.T_2_j))
-                .chain(iter::once(&pc_gens.B))
-                .chain(iter::once(&pc_gens.B_blinding)),
-        );
+                .chain(iter::once(-self.t_x_blinding)).collect();
 
-        if t_check.is_identity().into() {
+            VariableBaseMSM::msm(&bases, &scalars)
+        }.unwrap();
+
+        if t_check.is_zero() {
             Ok(())
         } else {
             Err(())

@@ -15,8 +15,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 use clear_on_drop::clear::Clear;
 use core::iter;
-use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use curve25519_dalek::scalar::Scalar;
+use core::ops::Neg;
+use ark_bn254::{G1Projective, G1Affine, Fr};
+use ark_ec::{CurveGroup, VariableBaseMSM};
+use ark_ff::UniformRand;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::errors::MPCError;
@@ -37,7 +39,7 @@ impl Party {
         bp_gens: &'a BulletproofGens,
         pc_gens: &'a PedersenGens,
         v: u64,
-        v_blinding: Scalar,
+        v_blinding: Fr,
         n: usize,
     ) -> Result<PartyAwaitingPosition<'a>, MPCError> {
         if !(n == 8 || n == 16 || n == 32 || n == 64) {
@@ -47,7 +49,7 @@ impl Party {
             return Err(MPCError::InvalidGeneratorsLength);
         }
 
-        let V = pc_gens.commit(v.into(), v_blinding).compress();
+        let V = pc_gens.commit(v.into(), v_blinding);
 
         Ok(PartyAwaitingPosition {
             bp_gens,
@@ -66,8 +68,8 @@ pub struct PartyAwaitingPosition<'a> {
     pc_gens: &'a PedersenGens,
     n: usize,
     v: u64,
-    v_blinding: Scalar,
-    V: CompressedRistretto,
+    v_blinding: Fr,
+    V: G1Projective,
 }
 
 impl<'a> PartyAwaitingPosition<'a> {
@@ -94,35 +96,33 @@ impl<'a> PartyAwaitingPosition<'a> {
 
         let bp_share = self.bp_gens.share(j);
 
-        let a_blinding = Scalar::random(rng);
+        let a_blinding = Fr::rand(rng);
         // Compute A = <a_L, G> + <a_R, H> + a_blinding * B_blinding
         let mut A = self.pc_gens.B_blinding * a_blinding;
 
-        use subtle::Choice;
-        use subtle::ConditionallySelectable;
         let mut i = 0;
         for (G_i, H_i) in bp_share.G(self.n).zip(bp_share.H(self.n)) {
             // If v_i = 0, we add a_L[i] * G[i] + a_R[i] * H[i] = - H[i]
             // If v_i = 1, we add a_L[i] * G[i] + a_R[i] * H[i] =   G[i]
-            let v_i = Choice::from(((self.v >> i) & 1) as u8);
-            let mut point = -H_i;
-            let point = RistrettoPoint::conditional_select(&point, G_i, v_i);
+            let v_i = ((self.v >> i) & 1) as u8;
+            let point = if v_i == 0 { H_i.neg() } else { *G_i };
             A += point;
             i += 1;
         }
 
-        let s_blinding = Scalar::random(rng);
-        let s_L: Vec<Scalar> = (0..self.n).map(|_| Scalar::random(rng)).collect();
-        let s_R: Vec<Scalar> = (0..self.n).map(|_| Scalar::random(rng)).collect();
+        let s_blinding = Fr::rand(rng);
+        let s_L: Vec<Fr> = (0..self.n).map(|_| Fr::rand(rng)).collect();
+        let s_R: Vec<Fr> = (0..self.n).map(|_| Fr::rand(rng)).collect();
 
         // Compute S = <s_L, G> + <s_R, H> + s_blinding * B_blinding
-        use curve25519_dalek::traits::MultiscalarMul;
-        let S = RistrettoPoint::multiscalar_mul(
-            iter::once(&s_blinding).chain(s_L.iter()).chain(s_R.iter()),
-            iter::once(&self.pc_gens.B_blinding)
-                .chain(bp_share.G(self.n))
-                .chain(bp_share.H(self.n)),
-        );
+        let S: G1Projective = {
+            let bases: Vec<G1Affine> = iter::once(G1Projective::into_affine(self.pc_gens.B_blinding))
+                .chain(bp_share.G(self.n).map(|p| G1Projective::into_affine(*p)))
+                .chain(bp_share.H(self.n).map(|p| G1Projective::into_affine(*p))).collect();
+            let scalars: Vec<Fr> = iter::once(&s_blinding).chain(s_L.iter()).chain(s_R.iter()).cloned().collect();
+
+            VariableBaseMSM::msm(&bases, &scalars)
+        }.unwrap();
 
         // Return next state and all commitments
         let bit_commitment = BitCommitment {
@@ -158,13 +158,13 @@ impl<'a> Drop for PartyAwaitingPosition<'a> {
 pub struct PartyAwaitingBitChallenge<'a> {
     n: usize, // bitsize of the range
     v: u64,
-    v_blinding: Scalar,
+    v_blinding: Fr,
     j: usize,
     pc_gens: &'a PedersenGens,
-    a_blinding: Scalar,
-    s_blinding: Scalar,
-    s_L: Vec<Scalar>,
-    s_R: Vec<Scalar>,
+    a_blinding: Fr,
+    s_blinding: Fr,
+    s_L: Vec<Fr>,
+    s_R: Vec<Fr>,
 }
 
 impl<'a> PartyAwaitingBitChallenge<'a> {
@@ -195,10 +195,10 @@ impl<'a> PartyAwaitingBitChallenge<'a> {
 
         let offset_zz = vc.z * vc.z * offset_z;
         let mut exp_y = offset_y; // start at y^j
-        let mut exp_2 = Scalar::ONE; // start at 2^0 = 1
+        let mut exp_2 = Fr::from(1); // start at 2^0 = 1
         for i in 0..n {
-            let a_L_i = Scalar::from((self.v >> i) & 1);
-            let a_R_i = a_L_i - Scalar::ONE;
+            let a_L_i = Fr::from((self.v >> i) & 1);
+            let a_R_i = a_L_i - Fr::from(1);
 
             l_poly.0[i] = a_L_i - vc.z;
             l_poly.1[i] = self.s_L[i];
@@ -212,8 +212,8 @@ impl<'a> PartyAwaitingBitChallenge<'a> {
         let t_poly = l_poly.inner_product(&r_poly);
 
         // Generate x by committing to T_1, T_2 (line 49-54)
-        let t_1_blinding = Scalar::random(rng);
-        let t_2_blinding = Scalar::random(rng);
+        let t_1_blinding = Fr::rand(rng);
+        let t_2_blinding = Fr::rand(rng);
         let T_1 = self.pc_gens.commit(t_poly.1, t_1_blinding);
         let T_2 = self.pc_gens.commit(t_poly.2, t_2_blinding);
 
@@ -263,15 +263,15 @@ impl<'a> Drop for PartyAwaitingBitChallenge<'a> {
 /// A party which has committed to their polynomial coefficents
 /// and is waiting for the polynomial challenge from the dealer.
 pub struct PartyAwaitingPolyChallenge {
-    offset_zz: Scalar,
+    offset_zz: Fr,
     l_poly: util::VecPoly1,
     r_poly: util::VecPoly1,
     t_poly: util::Poly2,
-    v_blinding: Scalar,
-    a_blinding: Scalar,
-    s_blinding: Scalar,
-    t_1_blinding: Scalar,
-    t_2_blinding: Scalar,
+    v_blinding: Fr,
+    a_blinding: Fr,
+    s_blinding: Fr,
+    t_1_blinding: Fr,
+    t_2_blinding: Fr,
 }
 
 impl PartyAwaitingPolyChallenge {
@@ -280,7 +280,7 @@ impl PartyAwaitingPolyChallenge {
     pub fn apply_challenge(self, pc: &PolyChallenge) -> Result<ProofShare, MPCError> {
         // Prevent a malicious dealer from annihilating the blinding
         // factors by supplying a zero challenge.
-        if pc.x == Scalar::ZERO {
+        if pc.x == Fr::from(0) {
             return Err(MPCError::MaliciousDealer);
         }
 

@@ -5,11 +5,12 @@ extern crate alloc;
 
 use alloc::borrow::Borrow;
 use alloc::vec::Vec;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_ff::Field;
 
 use core::iter;
-use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::VartimeMultiscalarMul;
+use ark_bn254::{G1Projective, G1Affine, Fr};
+use ark_ec::{CurveGroup, VariableBaseMSM};
 use merlin::Transcript;
 
 use crate::errors::ProofError;
@@ -17,10 +18,10 @@ use crate::transcript::TranscriptProtocol;
 
 #[derive(Clone, Debug)]
 pub struct InnerProductProof {
-    pub(crate) L_vec: Vec<CompressedRistretto>,
-    pub(crate) R_vec: Vec<CompressedRistretto>,
-    pub(crate) a: Scalar,
-    pub(crate) b: Scalar,
+    pub(crate) L_vec: Vec<G1Projective>,
+    pub(crate) R_vec: Vec<G1Projective>,
+    pub(crate) a: Fr,
+    pub(crate) b: Fr,
 }
 
 impl InnerProductProof {
@@ -37,13 +38,13 @@ impl InnerProductProof {
     /// either 0 or a power of 2.
     pub fn create(
         transcript: &mut Transcript,
-        Q: &RistrettoPoint,
-        G_factors: &[Scalar],
-        H_factors: &[Scalar],
-        mut G_vec: Vec<RistrettoPoint>,
-        mut H_vec: Vec<RistrettoPoint>,
-        mut a_vec: Vec<Scalar>,
-        mut b_vec: Vec<Scalar>,
+        Q: &G1Projective,
+        G_factors: &[Fr],
+        H_factors: &[Fr],
+        mut G_vec: Vec<G1Projective>,
+        mut H_vec: Vec<G1Projective>,
+        mut a_vec: Vec<Fr>,
+        mut b_vec: Vec<Fr>,
     ) -> InnerProductProof {
         // Create slices G, H, a, b backed by their respective
         // vectors.  This lets us reslice as we compress the lengths
@@ -84,8 +85,12 @@ impl InnerProductProof {
             let c_L = inner_product(&a_L, &b_R);
             let c_R = inner_product(&a_R, &b_L);
 
-            let L = RistrettoPoint::vartime_multiscalar_mul(
-                a_L.iter()
+            let L: G1Projective = {
+                let bases: Vec<G1Affine> = G_R.iter()
+                    .map(|p| G1Projective::into_affine(*p))
+                    .chain(H_L.iter().map(|p| G1Projective::into_affine(*p)))
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
+                let scalars: Vec<Fr> = a_L.iter()
                     .zip(G_factors[n..2 * n].into_iter())
                     .map(|(a_L_i, g)| a_L_i * g)
                     .chain(
@@ -93,13 +98,17 @@ impl InnerProductProof {
                             .zip(H_factors[0..n].into_iter())
                             .map(|(b_R_i, h)| b_R_i * h),
                     )
-                    .chain(iter::once(c_L)),
-                G_R.iter().chain(H_L.iter()).chain(iter::once(Q)),
-            )
-            .compress();
+                    .chain(iter::once(c_L)).collect();
+                
+                VariableBaseMSM::msm(&bases, &scalars)
+            }.unwrap();
 
-            let R = RistrettoPoint::vartime_multiscalar_mul(
-                a_R.iter()
+            let R: G1Projective = {
+                let bases: Vec<G1Affine> = G_L.iter()
+                    .map(|p| G1Projective::into_affine(*p))
+                    .chain(H_R.iter().map(|p| G1Projective::into_affine(*p)))
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
+                let scalars: Vec<Fr> = a_R.iter()
                     .zip(G_factors[0..n].into_iter())
                     .map(|(a_R_i, g)| a_R_i * g)
                     .chain(
@@ -107,10 +116,10 @@ impl InnerProductProof {
                             .zip(H_factors[n..2 * n].into_iter())
                             .map(|(b_L_i, h)| b_L_i * h),
                     )
-                    .chain(iter::once(c_R)),
-                G_L.iter().chain(H_R.iter()).chain(iter::once(Q)),
-            )
-            .compress();
+                    .chain(iter::once(c_R)).collect();
+                
+                VariableBaseMSM::msm(&bases, &scalars)
+            }.unwrap();
 
             L_vec.push(L);
             R_vec.push(R);
@@ -119,19 +128,19 @@ impl InnerProductProof {
             transcript.append_point(b"R", &R);
 
             let u = transcript.challenge_scalar(b"u");
-            let u_inv = u.invert();
+            let u_inv = u.inverse().unwrap();
 
             for i in 0..n {
                 a_L[i] = a_L[i] * u + u_inv * a_R[i];
                 b_L[i] = b_L[i] * u_inv + u * b_R[i];
-                G_L[i] = RistrettoPoint::vartime_multiscalar_mul(
+                G_L[i] = VariableBaseMSM::msm(
+                    &[G1Projective::into_affine(G_L[i]), G1Projective::into_affine(G_R[i])],
                     &[u_inv * G_factors[i], u * G_factors[n + i]],
-                    &[G_L[i], G_R[i]],
-                );
-                H_L[i] = RistrettoPoint::vartime_multiscalar_mul(
+                ).unwrap();
+                H_L[i] = VariableBaseMSM::msm(
+                    &[G1Projective::into_affine(H_L[i]), G1Projective::into_affine(H_R[i])],
                     &[u * H_factors[i], u_inv * H_factors[n + i]],
-                    &[H_L[i], H_R[i]],
-                )
+                ).unwrap()
             }
 
             a = a_L;
@@ -150,17 +159,25 @@ impl InnerProductProof {
             let c_L = inner_product(&a_L, &b_R);
             let c_R = inner_product(&a_R, &b_L);
 
-            let L = RistrettoPoint::vartime_multiscalar_mul(
-                a_L.iter().chain(b_R.iter()).chain(iter::once(&c_L)),
-                G_R.iter().chain(H_L.iter()).chain(iter::once(Q)),
-            )
-            .compress();
+            let L: G1Projective = {
+                let bases: Vec<G1Affine> = G_R.iter()
+                    .map(|p| G1Projective::into_affine(*p))
+                    .chain(H_L.iter().map(|p| G1Projective::into_affine(*p)))
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
+                let scalars: Vec<Fr> = a_L.iter().chain(b_R.iter()).chain(iter::once(&c_L)).cloned().collect();
+                
+                VariableBaseMSM::msm(&bases, &scalars)
+            }.unwrap();
 
-            let R = RistrettoPoint::vartime_multiscalar_mul(
-                a_R.iter().chain(b_L.iter()).chain(iter::once(&c_R)),
-                G_L.iter().chain(H_R.iter()).chain(iter::once(Q)),
-            )
-            .compress();
+            let R: G1Projective = {
+                let bases: Vec<G1Affine> = G_L.iter()
+                    .map(|p| G1Projective::into_affine(*p))
+                    .chain(H_R.iter().map(|p| G1Projective::into_affine(*p)))
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
+                let scalars: Vec<Fr> = a_R.iter().chain(b_L.iter()).chain(iter::once(&c_R)).cloned().collect();
+
+                VariableBaseMSM::msm(&bases, &scalars)
+            }.unwrap();
 
             L_vec.push(L);
             R_vec.push(R);
@@ -169,13 +186,13 @@ impl InnerProductProof {
             transcript.append_point(b"R", &R);
 
             let u = transcript.challenge_scalar(b"u");
-            let u_inv = u.invert();
+            let u_inv = u.inverse().unwrap();
 
             for i in 0..n {
                 a_L[i] = a_L[i] * u + u_inv * a_R[i];
                 b_L[i] = b_L[i] * u_inv + u * b_R[i];
-                G_L[i] = RistrettoPoint::vartime_multiscalar_mul(&[u_inv, u], &[G_L[i], G_R[i]]);
-                H_L[i] = RistrettoPoint::vartime_multiscalar_mul(&[u, u_inv], &[H_L[i], H_R[i]]);
+                G_L[i] = VariableBaseMSM::msm(&[G1Projective::into_affine(G_L[i]), G1Projective::into_affine(G_R[i])], &[u_inv, u]).unwrap();
+                H_L[i] = VariableBaseMSM::msm(&[G1Projective::into_affine(H_L[i]), G1Projective::into_affine(H_R[i])], &[u, u_inv]).unwrap();
             }
 
             a = a_L;
@@ -199,7 +216,7 @@ impl InnerProductProof {
         &self,
         n: usize,
         transcript: &mut Transcript,
-    ) -> Result<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>), ProofError> {
+    ) -> Result<(Vec<Fr>, Vec<Fr>, Vec<Fr>), ProofError> {
         let lg_n = self.L_vec.len();
         if lg_n >= 32 {
             // 4 billion multiplications should be enough for anyone
@@ -223,23 +240,17 @@ impl InnerProductProof {
 
         // 2. Compute 1/(u_k...u_1) and 1/u_k, ..., 1/u_1
 
-        let mut challenges_inv = challenges.clone();
-        let allinv = Scalar::batch_invert(&mut challenges_inv);
+        let challenges_inv = challenges.clone();
+        let allinv = challenges_inv.iter().map(|scalar| scalar.inverse().unwrap());
 
         // 3. Compute u_i^2 and (1/u_i)^2
-
-        for i in 0..lg_n {
-            // XXX missing square fn upstream
-            challenges[i] = challenges[i] * challenges[i];
-            challenges_inv[i] = challenges_inv[i] * challenges_inv[i];
-        }
-        let challenges_sq = challenges;
-        let challenges_inv_sq = challenges_inv;
+        let challenges_sq: Vec<Fr> = challenges.into_iter().map(|c| c * c).collect();
+        let challenges_inv_sq: Vec<Fr> = allinv.clone().into_iter().map(|c_inv| c_inv * c_inv).collect();
 
         // 4. Compute s values inductively.
 
         let mut s = Vec::with_capacity(n);
-        s.push(allinv);
+        s.extend(allinv);
         for i in 1..n {
             let lg_i = (32 - 1 - (i as u32).leading_zeros()) as usize;
             let k = 1 << lg_i;
@@ -263,16 +274,16 @@ impl InnerProductProof {
         transcript: &mut Transcript,
         G_factors: IG,
         H_factors: IH,
-        P: &RistrettoPoint,
-        Q: &RistrettoPoint,
-        G: &[RistrettoPoint],
-        H: &[RistrettoPoint],
+        P: &G1Projective,
+        Q: &G1Projective,
+        G: &[G1Projective],
+        H: &[G1Projective],
     ) -> Result<(), ProofError>
     where
         IG: IntoIterator,
-        IG::Item: Borrow<Scalar>,
+        IG::Item: Borrow<Fr>,
         IH: IntoIterator,
-        IH::Item: Borrow<Scalar>,
+        IH::Item: Borrow<Fr>,
     {
         let (u_sq, u_inv_sq, s) = self.verification_scalars(n, transcript)?;
 
@@ -290,33 +301,48 @@ impl InnerProductProof {
             .zip(inv_s)
             .map(|(h_i, s_i_inv)| (self.b * s_i_inv) * h_i.borrow());
 
-        let neg_u_sq = u_sq.iter().map(|ui| -ui);
-        let neg_u_inv_sq = u_inv_sq.iter().map(|ui| -ui);
+        let neg_u_sq = u_sq.iter().map(|ui| Fr::from(-1)*ui);
+        let neg_u_inv_sq = u_inv_sq.iter().map(|ui| Fr::from(-1)*ui);
 
-        let Ls = self
+        let Ls: Vec<G1Affine> = self
             .L_vec
             .iter()
-            .map(|p| p.decompress().ok_or(ProofError::VerificationError))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let Rs = self
+            .map(|p| G1Projective::into_affine(*p))
+            .collect();
+        
+        let Rs: Vec<G1Affine>  = self
             .R_vec
             .iter()
-            .map(|p| p.decompress().ok_or(ProofError::VerificationError))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|p| G1Projective::into_affine(*p))
+            .collect();
 
-        let expect_P = RistrettoPoint::vartime_multiscalar_mul(
-            iter::once(self.a * self.b)
+        let Qs: G1Affine = G1Projective::into_affine(*Q);
+
+        let Gs: Vec<G1Affine> = G.iter()
+            .map(|g| G1Projective::into_affine(*g))
+            .collect();
+
+        let Hs: Vec<G1Affine> = H.iter()
+            .map(|h| G1Projective::into_affine(*h))
+            .collect();
+        
+        let expect_P: G1Projective = {
+            let scalars: Vec<Fr> = iter::once(self.a * self.b)
                 .chain(g_times_a_times_s)
                 .chain(h_times_b_div_s)
                 .chain(neg_u_sq)
-                .chain(neg_u_inv_sq),
-            iter::once(Q)
-                .chain(G.iter())
-                .chain(H.iter())
-                .chain(Ls.iter())
-                .chain(Rs.iter()),
-        );
+                .chain(neg_u_inv_sq)
+                .collect();
+
+            let points: Vec<G1Affine> = iter::once(Qs)
+                .chain(Gs.iter().cloned())
+                .chain(Hs.iter().cloned())
+                .chain(Ls.iter().cloned())
+                .chain(Rs.iter().cloned())
+                .collect();
+            
+            VariableBaseMSM::msm(&points, &scalars)
+        }.unwrap();
 
         if expect_P == *P {
             Ok(())
@@ -341,11 +367,19 @@ impl InnerProductProof {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.serialized_size());
         for (l, r) in self.L_vec.iter().zip(self.R_vec.iter()) {
-            buf.extend_from_slice(l.as_bytes());
-            buf.extend_from_slice(r.as_bytes());
+            let mut l_bytes = Vec::new();
+            let mut r_bytes = Vec::new();
+            l.serialize_compressed(&mut l_bytes).unwrap();
+            r.serialize_compressed(&mut r_bytes).unwrap();
+            buf.extend_from_slice(l_bytes.as_slice());
+            buf.extend_from_slice(r_bytes.as_slice());
         }
-        buf.extend_from_slice(self.a.as_bytes());
-        buf.extend_from_slice(self.b.as_bytes());
+        let mut a_bytes = Vec::new();
+        let mut b_bytes = Vec::new();
+        self.a.serialize_compressed(&mut a_bytes).unwrap();
+        self.b.serialize_compressed(&mut b_bytes).unwrap();
+        buf.extend_from_slice(a_bytes.as_slice());
+        buf.extend_from_slice(b_bytes.as_slice());
         buf
     }
 
@@ -353,15 +387,40 @@ impl InnerProductProof {
     /// The layout of the inner product proof is:
     /// * \\(n\\) pairs of compressed Ristretto points \\(L_0, R_0 \dots, L_{n-1}, R_{n-1}\\),
     /// * two scalars \\(a, b\\).
-    #[inline]
+    /*#[inline]
     pub(crate) fn to_bytes_iter(&self) -> impl Iterator<Item = u8> + '_ {
+        let a_compressed = Vec::new();
+        let b_compressed = Vec::new();
+        CanonicalSerialize::serialize_compressed(&self.a, a_compressed);
+        CanonicalSerialize::serialize_compressed(&self.b, b_compressed);
         self.L_vec
             .iter()
             .zip(self.R_vec.iter())
-            .flat_map(|(l, r)| l.as_bytes().iter().chain(r.as_bytes()))
-            .chain(self.a.as_bytes())
-            .chain(self.b.as_bytes())
+            .flat_map(|(l, r)| {
+                let mut l_compressed = Vec::new();
+                let mut r_compressed = Vec::new();
+                l.serialize_compressed(&mut l_compressed);
+                r.serialize_compressed(&mut r_compressed);
+                l_compressed.iter().chain(r_compressed.as_slice())
+            })
+            .chain(a_compressed.as_slice())
+            .chain(b_compressed.as_slice())
             .copied()
+    }*/
+    pub(crate) fn to_bytes_iter(&self) -> impl Iterator<Item = u8> + '_ {
+        let mut buf = Vec::new();
+    
+        // Serialize L and R vectors
+        for (l, r) in self.L_vec.iter().zip(self.R_vec.iter()) {
+            l.serialize_compressed(&mut buf).unwrap(); // Handle errors as appropriate
+            r.serialize_compressed(&mut buf).unwrap(); // Handle errors as appropriate
+        }
+    
+        // Serialize a and b
+        self.a.serialize_compressed(&mut buf).unwrap(); // Handle errors as appropriate
+        self.b.serialize_compressed(&mut buf).unwrap(); // Handle errors as appropriate
+    
+        buf.into_iter()
     }
 
     /// Deserializes the proof from a byte slice.
@@ -387,21 +446,19 @@ impl InnerProductProof {
             return Err(ProofError::FormatError);
         }
 
-        use crate::util::read32;
-
-        let mut L_vec: Vec<CompressedRistretto> = Vec::with_capacity(lg_n);
-        let mut R_vec: Vec<CompressedRistretto> = Vec::with_capacity(lg_n);
+        let mut L_vec: Vec<G1Projective> = Vec::with_capacity(lg_n);
+        let mut R_vec: Vec<G1Projective> = Vec::with_capacity(lg_n);
         for i in 0..lg_n {
             let pos = 2 * i * 32;
-            L_vec.push(CompressedRistretto(read32(&slice[pos..])));
-            R_vec.push(CompressedRistretto(read32(&slice[pos + 32..])));
+            L_vec.push(G1Projective::deserialize_compressed(&slice[pos..]).unwrap());
+            R_vec.push(G1Projective::deserialize_compressed(&slice[pos + 32..]).unwrap());
         }
 
         let pos = 2 * lg_n * 32;
-        let a = Option::from(Scalar::from_canonical_bytes(read32(&slice[pos..])))
-            .ok_or(ProofError::FormatError)?;
-        let b = Option::from(Scalar::from_canonical_bytes(read32(&slice[pos + 32..])))
-            .ok_or(ProofError::FormatError)?;
+        let a: Fr = CanonicalDeserialize::deserialize_compressed(&slice[pos..])
+            .map_err(|_| ProofError::FormatError)?;
+        let b: Fr = CanonicalDeserialize::deserialize_compressed(&slice[pos + 32..])
+            .map_err(|_| ProofError::FormatError)?;
 
         Ok(InnerProductProof { L_vec, R_vec, a, b })
     }
@@ -412,8 +469,8 @@ impl InnerProductProof {
 ///    {\langle {\mathbf{a}}, {\mathbf{b}} \rangle} = \sum\_{i=0}^{n-1} a\_i \cdot b\_i.
 /// \\]
 /// Panics if the lengths of \\(\mathbf{a}\\) and \\(\mathbf{b}\\) are not equal.
-pub fn inner_product(a: &[Scalar], b: &[Scalar]) -> Scalar {
-    let mut out = Scalar::ZERO;
+pub fn inner_product(a: &[Fr], b: &[Fr]) -> Fr {
+    let mut out = Fr::from(0);
     if a.len() != b.len() {
         panic!("inner_product(a,b): lengths of vectors do not match");
     }
@@ -428,48 +485,55 @@ mod tests {
     use super::*;
 
     use crate::util;
+    use ark_serialize::CanonicalSerializeHashExt;
     use sha3::Sha3_512;
 
     fn test_helper_create(n: usize) {
         let mut rng = rand::thread_rng();
 
         use crate::generators::BulletproofGens;
+        use ark_ff::UniformRand;
         let bp_gens = BulletproofGens::new(n, 1);
-        let G: Vec<RistrettoPoint> = bp_gens.share(0).G(n).cloned().collect();
-        let H: Vec<RistrettoPoint> = bp_gens.share(0).H(n).cloned().collect();
+        let G: Vec<G1Projective> = bp_gens.share(0).G(n).cloned().collect();
+        let H: Vec<G1Projective> = bp_gens.share(0).H(n).cloned().collect();
 
         // Q would be determined upstream in the protocol, so we pick a random one.
-        let Q = RistrettoPoint::hash_from_bytes::<Sha3_512>(b"test point");
+        let Q = G1Projective::hash::<Sha3_512>(&G1Projective::deserialize_compressed(b"test point".as_ref()).unwrap());
 
         // a and b are the vectors for which we want to prove c = <a,b>
-        let a: Vec<_> = (0..n).map(|_| Scalar::random(&mut rng)).collect();
-        let b: Vec<_> = (0..n).map(|_| Scalar::random(&mut rng)).collect();
+        let a: Vec<_> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let b: Vec<_> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
         let c = inner_product(&a, &b);
 
-        let G_factors: Vec<Scalar> = iter::repeat(Scalar::ONE).take(n).collect();
+        let G_factors: Vec<Fr> = iter::repeat(Fr::from(1)).take(n).collect();
 
         // y_inv is (the inverse of) a random challenge
-        let y_inv = Scalar::random(&mut rng);
-        let H_factors: Vec<Scalar> = util::exp_iter(y_inv).take(n).collect();
+        let y_inv = Fr::rand(&mut rng);
+        let H_factors: Vec<Fr> = util::exp_iter(y_inv).take(n).collect();
 
         // P would be determined upstream, but we need a correct P to check the proof.
         //
         // To generate P = <a,G> + <b,H'> + <a,b> Q, compute
         //             P = <a,G> + <b',H> + <a,b> Q,
         // where b' = b \circ y^(-n)
-        let b_prime = b.iter().zip(util::exp_iter(y_inv)).map(|(bi, yi)| bi * yi);
+        let b_prime = b.iter().zip(util::exp_iter(y_inv)).map(|(bi, yi)| *bi * yi);
         // a.iter() has Item=&Scalar, need Item=Scalar to chain with b_prime
         let a_prime = a.iter().cloned();
 
-        let P = RistrettoPoint::vartime_multiscalar_mul(
-            a_prime.chain(b_prime).chain(iter::once(c)),
-            G.iter().chain(H.iter()).chain(iter::once(&Q)),
-        );
+        let P: G1Projective = {
+            let bases: Vec<G1Affine> = G.iter()
+                .map(|p| G1Projective::into_affine(*p))
+                .chain(H.iter().map(|p| G1Projective::into_affine(*p)))
+                .chain(iter::once(G1Projective::into_affine(G1Projective::deserialize_compressed(Q.as_slice()).unwrap()))).collect();
+            let scalars: Vec<Fr> = a_prime.chain(b_prime).chain(iter::once(c)).collect();
+
+            VariableBaseMSM::msm(&bases, &scalars)
+        }.unwrap();
 
         let mut verifier = Transcript::new(b"innerproducttest");
         let proof = InnerProductProof::create(
             &mut verifier,
-            &Q,
+            &G1Projective::deserialize_compressed(Q.as_slice()).unwrap(),
             &G_factors,
             &H_factors,
             G.clone(),
@@ -483,10 +547,10 @@ mod tests {
             .verify(
                 n,
                 &mut verifier,
-                iter::repeat(Scalar::ONE).take(n),
+                iter::repeat(Fr::from(1)).take(n),
                 util::exp_iter(y_inv).take(n),
                 &P,
-                &Q,
+                &G1Projective::deserialize_compressed(Q.as_slice()).unwrap(),
                 &G,
                 &H
             )
@@ -498,10 +562,10 @@ mod tests {
             .verify(
                 n,
                 &mut verifier,
-                iter::repeat(Scalar::ONE).take(n),
+                iter::repeat(Fr::from(1)).take(n),
                 util::exp_iter(y_inv).take(n),
                 &P,
-                &Q,
+                &G1Projective::deserialize_compressed(Q.as_slice()).unwrap(),
                 &G,
                 &H
             )
@@ -536,17 +600,17 @@ mod tests {
     #[test]
     fn test_inner_product() {
         let a = vec![
-            Scalar::from(1u64),
-            Scalar::from(2u64),
-            Scalar::from(3u64),
-            Scalar::from(4u64),
+            Fr::from(1u64),
+            Fr::from(2u64),
+            Fr::from(3u64),
+            Fr::from(4u64),
         ];
         let b = vec![
-            Scalar::from(2u64),
-            Scalar::from(3u64),
-            Scalar::from(4u64),
-            Scalar::from(5u64),
+            Fr::from(2u64),
+            Fr::from(3u64),
+            Fr::from(4u64),
+            Fr::from(5u64),
         ];
-        assert_eq!(Scalar::from(40u64), inner_product(&a, &b));
+        assert_eq!(Fr::from(40u64), inner_product(&a, &b));
     }
 }
