@@ -6,9 +6,11 @@
 
 extern crate alloc;
 
+use core::ops::Mul;
+
 use alloc::vec::Vec;
-use ark_bn254::{Fr, G1Projective, G1Affine};
-use ark_ec::{CurveGroup, VariableBaseMSM};
+use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
+use ark_ec::{CurveGroup, Group, VariableBaseMSM};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, CanonicalSerializeHashExt};
 use digest::{ExtendableOutput, Update, XofReader};
 use sha3::{Sha3_512, Shake256, Shake256Reader};
@@ -94,7 +96,8 @@ impl Iterator for GeneratorsChain {
         let mut uniform_bytes = [0u8; 64];
         self.reader.read(&mut uniform_bytes);
 
-        Some(G1Projective::deserialize_compressed(uniform_bytes.as_slice()).unwrap())
+        let fr: Fr = Fr::from(num_bigint::BigUint::from_bytes_le(&uniform_bytes));
+        Some(G1Projective::generator().mul(fr))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

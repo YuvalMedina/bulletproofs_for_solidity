@@ -89,7 +89,7 @@ impl InnerProductProof {
                 let bases: Vec<G1Affine> = G_R.iter()
                     .map(|p| G1Projective::into_affine(*p))
                     .chain(H_L.iter().map(|p| G1Projective::into_affine(*p)))
-                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect::<Vec<_>>();
                 let scalars: Vec<Fr> = a_L.iter()
                     .zip(G_factors[n..2 * n].into_iter())
                     .map(|(a_L_i, g)| a_L_i * g)
@@ -98,7 +98,7 @@ impl InnerProductProof {
                             .zip(H_factors[0..n].into_iter())
                             .map(|(b_R_i, h)| b_R_i * h),
                     )
-                    .chain(iter::once(c_L)).collect();
+                    .chain(iter::once(c_L)).collect::<Vec<_>>();
                 
                 VariableBaseMSM::msm(&bases, &scalars)
             }.unwrap();
@@ -163,8 +163,8 @@ impl InnerProductProof {
                 let bases: Vec<G1Affine> = G_R.iter()
                     .map(|p| G1Projective::into_affine(*p))
                     .chain(H_L.iter().map(|p| G1Projective::into_affine(*p)))
-                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
-                let scalars: Vec<Fr> = a_L.iter().chain(b_R.iter()).chain(iter::once(&c_L)).cloned().collect();
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect::<Vec<_>>();
+                let scalars: Vec<Fr> = a_L.iter().chain(b_R.iter()).chain(iter::once(&c_L)).cloned().collect::<Vec<_>>();
                 
                 VariableBaseMSM::msm(&bases, &scalars)
             }.unwrap();
@@ -173,8 +173,8 @@ impl InnerProductProof {
                 let bases: Vec<G1Affine> = G_L.iter()
                     .map(|p| G1Projective::into_affine(*p))
                     .chain(H_R.iter().map(|p| G1Projective::into_affine(*p)))
-                    .chain(iter::once(G1Projective::into_affine(*Q))).collect();
-                let scalars: Vec<Fr> = a_R.iter().chain(b_L.iter()).chain(iter::once(&c_R)).cloned().collect();
+                    .chain(iter::once(G1Projective::into_affine(*Q))).collect::<Vec<_>>();
+                let scalars: Vec<Fr> = a_R.iter().chain(b_L.iter()).chain(iter::once(&c_R)).cloned().collect::<Vec<_>>();
 
                 VariableBaseMSM::msm(&bases, &scalars)
             }.unwrap();
@@ -327,20 +327,22 @@ impl InnerProductProof {
             .collect();
         
         let expect_P: G1Projective = {
-            let scalars: Vec<Fr> = iter::once(self.a * self.b)
-                .chain(g_times_a_times_s)
-                .chain(h_times_b_div_s)
-                .chain(neg_u_sq)
-                .chain(neg_u_inv_sq)
-                .collect();
+            let mut scalars: Vec<Fr> = Vec::new();
+            scalars.push(self.a * self.b);
+            scalars.extend(g_times_a_times_s);
+            scalars.extend(h_times_b_div_s);
+            scalars.extend(neg_u_sq);
+            scalars.extend(neg_u_inv_sq);
 
-            let points: Vec<G1Affine> = iter::once(Qs)
-                .chain(Gs.iter().cloned())
-                .chain(Hs.iter().cloned())
-                .chain(Ls.iter().cloned())
-                .chain(Rs.iter().cloned())
-                .collect();
+            let mut points: Vec<G1Affine> = Vec::new();
+            points.push(Qs);
+            points.extend(Gs);
+            points.extend(Hs);
+            points.extend(Ls);
+            points.extend(Rs);
             
+            println!("Length check: {}, {}", scalars.len(), points.len());
+
             VariableBaseMSM::msm(&points, &scalars)
         }.unwrap();
 
@@ -482,9 +484,12 @@ pub fn inner_product(a: &[Fr], b: &[Fr]) -> Fr {
 
 #[cfg(test)]
 mod tests {
+    use core::ops::Mul;
+
     use super::*;
 
     use crate::util;
+    use ark_ec::Group;
     use ark_serialize::CanonicalSerializeHashExt;
     use sha3::Sha3_512;
 
@@ -498,7 +503,9 @@ mod tests {
         let H: Vec<G1Projective> = bp_gens.share(0).H(n).cloned().collect();
 
         // Q would be determined upstream in the protocol, so we pick a random one.
-        let Q = G1Projective::hash::<Sha3_512>(&G1Projective::deserialize_compressed(b"test point".as_ref()).unwrap());
+        let fr: Fr = Fr::from(num_bigint::BigUint::from_bytes_le(b"test point".as_ref()));
+        let mut Q = Vec::new();
+        G1Projective::generator().mul(fr).serialize_compressed(& mut Q).unwrap();
 
         // a and b are the vectors for which we want to prove c = <a,b>
         let a: Vec<_> = (0..n).map(|_| Fr::rand(&mut rng)).collect();

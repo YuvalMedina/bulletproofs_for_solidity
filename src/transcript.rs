@@ -97,6 +97,6 @@ impl TranscriptProtocol for Transcript {
         let mut buf = [0u8; 64];
         self.challenge_bytes(label, &mut buf);
 
-        CanonicalDeserialize::deserialize_compressed(&buf[..]).unwrap()
+        Fr::from(num_bigint::BigUint::from_bytes_le(&buf[..]))
     }
 }
